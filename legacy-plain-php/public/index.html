@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="description" content="Sign in to Leaf & Lore Library Management System">
+  <title>Login | Leaf & Lore Library</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Playfair+Display:wght@600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+  <main class="login-shell">
+    <section class="visual-panel" aria-label="A warm, sunlit library">
+      <div class="brand brand--light">
+        <span class="brand__mark" aria-hidden="true">
+          <svg viewBox="0 0 48 48" role="img"><path d="M12 9.5c6.5 0 10.3 2.2 12 5.5 1.7-3.3 5.5-5.5 12-5.5v25c-6.4 0-10.3 1.5-12 4.5-1.7-3-5.6-4.5-12-4.5v-25Z"/><path d="M24 15v24"/></svg>
+        </span>
+        <span>Leaf &amp; Lore</span>
+      </div>
+
+      <div class="visual-copy">
+        <p class="eyebrow">Your library, beautifully organized</p>
+        <h2>Every great story<br>starts right here.</h2>
+        <p>Manage your books, members, and lending—all from one quiet corner.</p>
+      </div>
+
+      <div class="visual-footer">
+        <span>Est. 2026</span>
+        <span class="visual-footer__line"></span>
+        <span>Read. Learn. Grow.</span>
+      </div>
+    </section>
+
+    <section class="form-panel">
+      <div class="brand brand--mobile">
+        <span class="brand__mark" aria-hidden="true">
+          <svg viewBox="0 0 48 48" role="img"><path d="M12 9.5c6.5 0 10.3 2.2 12 5.5 1.7-3.3 5.5-5.5 12-5.5v25c-6.4 0-10.3 1.5-12 4.5-1.7-3-5.6-4.5-12-4.5v-25Z"/><path d="M24 15v24"/></svg>
+        </span>
+        <span>Leaf &amp; Lore</span>
+      </div>
+
+      <div class="form-wrap">
+        <header class="form-header">
+          <span class="welcome-icon" aria-hidden="true">✦</span>
+          <p class="eyebrow eyebrow--green">Welcome back</p>
+          <h1>Sign in to your account</h1>
+          <p>Enter your details to continue to the library.</p>
+        </header>
+
+        <form id="loginForm" novalidate>
+          <div class="field">
+            <label for="email">Email address</label>
+            <div class="input-wrap">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16v12H4zM4 7l8 6 8-6"/></svg>
+              <input type="email" id="email" name="email" placeholder="you@example.com" autocomplete="email" required>
+            </div>
+            <span class="field-error" id="emailError"></span>
+          </div>
+
+          <div class="field">
+            <div class="label-row">
+              <label for="password">Password</label>
+              <a href="#">Forgot password?</a>
+            </div>
+            <div class="input-wrap">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="10" width="14" height="10" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg>
+              <input type="password" id="password" name="password" placeholder="Enter your password" autocomplete="current-password" minlength="6" required>
+              <button class="password-toggle" id="passwordToggle" type="button" aria-label="Show password">
+                <svg class="eye-open" viewBox="0 0 24 24" aria-hidden="true"><path d="M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6-9.5-6-9.5-6Z"/><circle cx="12" cy="12" r="2.5"/></svg>
+              </button>
+            </div>
+            <span class="field-error" id="passwordError"></span>
+          </div>
+
+          <label class="remember">
+            <input type="checkbox" name="remember">
+            <span>Keep me signed in</span>
+          </label>
+
+          <button class="submit-btn" type="submit">
+            <span>Sign in</span>
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14M14 7l5 5-5 5"/></svg>
+          </button>
+
+          <p class="form-message" id="formMessage" role="status" aria-live="polite"></p>
+        </form>
+
+        <p class="signup">New to Leaf &amp; Lore? <a href="register.html">Create an account</a></p>
+      </div>
+
+      <footer class="page-footer">© 2026 Leaf &amp; Lore Library. All rights reserved.</footer>
+    </section>
+  </main>
+  <script src="js/script.js"></script>
+</body>
+</html>
