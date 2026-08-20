@@ -585,3 +585,9 @@ body {
 .print-header {
   display: none;
 }
+
+.membership-flow { display:flex; align-items:center; justify-content:space-between; gap:.65rem; overflow-x:auto; padding:.5rem; }
+.membership-step { min-width:110px; display:flex; flex-direction:column; align-items:center; gap:.45rem; text-align:center; color:var(--text-main); font-size:.78rem; font-weight:700; }
+.membership-step i { display:grid; place-items:center; width:44px; height:44px; border-radius:50%; background:var(--primary-light); color:var(--primary-color); font-size:1.2rem; }
+.membership-arrow { color:#94a3b8; flex:0 0 auto; }
+@media (max-width:767.98px) { .membership-flow { justify-content:flex-start; } }

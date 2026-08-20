@@ -74,6 +74,45 @@ document.addEventListener('DOMContentLoaded', () => {
             }
         });
     }
+
+    const paymentModal = document.getElementById('paymentModal');
+    if (paymentModal) {
+        const monthsInput = document.getElementById('paymentMonths');
+        let monthlyFee = 0;
+        const refreshTotal = () => {
+            document.getElementById('paymentTotal').textContent = `Rs. ${(monthlyFee * Math.max(1, parseInt(monthsInput.value || 1))).toLocaleString('en-US', {minimumFractionDigits: 2})}`;
+        };
+        paymentModal.addEventListener('show.bs.modal', event => {
+            const button = event.relatedTarget;
+            monthlyFee = parseFloat(button.dataset.monthlyFee || 0);
+            document.getElementById('paymentMemberId').value = button.dataset.memberId;
+            document.getElementById('paymentMemberName').textContent = button.dataset.memberName;
+            monthsInput.value = 1;
+            refreshTotal();
+        });
+        monthsInput.addEventListener('input', refreshTotal);
+    }
+
+    const editPaymentModal = document.getElementById('editPaymentModal');
+    if (editPaymentModal) {
+        const editMonths = document.getElementById('editPaymentMonths');
+        let editMonthlyFee = 0;
+        const refreshEditTotal = () => {
+            const total = editMonthlyFee * Math.max(1, parseInt(editMonths.value || 1));
+            document.getElementById('editPaymentTotal').textContent = `Rs. ${total.toLocaleString('en-US', {minimumFractionDigits: 2})}`;
+        };
+        editPaymentModal.addEventListener('show.bs.modal', event => {
+            const button = event.relatedTarget;
+            editMonthlyFee = parseFloat(button.dataset.monthlyFee || 0);
+            document.getElementById('editPaymentId').value = button.dataset.paymentId;
+            document.getElementById('editPaymentMember').textContent = button.dataset.memberName;
+            document.getElementById('editPaymentDate').value = button.dataset.paymentDate;
+            editMonths.value = button.dataset.months;
+            document.getElementById('editPaymentMethod').value = button.dataset.method;
+            refreshEditTotal();
+        });
+        editMonths.addEventListener('input', refreshEditTotal);
+    }
 });
 
 /**

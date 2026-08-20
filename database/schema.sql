@@ -56,7 +56,18 @@ CREATE TABLE IF NOT EXISTS books (
   INDEX idx_books_category (category_id)
 ) ENGINE=InnoDB;
 
--- 4. Members Table
+-- 4. Membership Plans
+CREATE TABLE IF NOT EXISTS membership_plans (
+  id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  name VARCHAR(100) NOT NULL UNIQUE,
+  monthly_fee DECIMAL(10,2) NOT NULL,
+  borrowing_limit INT UNSIGNED NOT NULL DEFAULT 3,
+  loan_days INT UNSIGNED NOT NULL DEFAULT 14,
+  is_active TINYINT(1) NOT NULL DEFAULT 1,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+) ENGINE=InnoDB;
+
+-- 5. Members Table
 CREATE TABLE IF NOT EXISTS members (
   id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
   member_no VARCHAR(30) NOT NULL UNIQUE,
@@ -64,10 +75,24 @@ CREATE TABLE IF NOT EXISTS members (
   email VARCHAR(190) NOT NULL UNIQUE,
   phone VARCHAR(30) NULL,
   address TEXT NULL,
+  membership_plan_id INT UNSIGNED NULL,
+  membership_expires_at DATE NULL,
   status ENUM('active', 'suspended') NOT NULL DEFAULT 'active',
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   INDEX idx_members_no (member_no),
-  INDEX idx_members_email (email)
+  INDEX idx_members_email (email),
+  CONSTRAINT fk_member_plan FOREIGN KEY (membership_plan_id) REFERENCES membership_plans(id) ON UPDATE CASCADE ON DELETE SET NULL
+) ENGINE=InnoDB;
+
+CREATE TABLE IF NOT EXISTS membership_payments (
+  id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY, member_id INT UNSIGNED NOT NULL, membership_plan_id INT UNSIGNED NOT NULL,
+  amount DECIMAL(10,2) NOT NULL, months_paid INT UNSIGNED NOT NULL DEFAULT 1, payment_date DATE NOT NULL,
+  period_start DATE NOT NULL, period_end DATE NOT NULL, payment_method ENUM('cash','card','bank_transfer') NOT NULL DEFAULT 'cash',
+  reference_no VARCHAR(50) NOT NULL UNIQUE, received_by INT UNSIGNED NULL, created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  CONSTRAINT fk_payment_member FOREIGN KEY (member_id) REFERENCES members(id) ON UPDATE CASCADE ON DELETE RESTRICT,
+  CONSTRAINT fk_payment_plan FOREIGN KEY (membership_plan_id) REFERENCES membership_plans(id) ON UPDATE CASCADE ON DELETE RESTRICT,
+  CONSTRAINT fk_payment_user FOREIGN KEY (received_by) REFERENCES users(id) ON UPDATE CASCADE ON DELETE SET NULL,
+  INDEX idx_payment_member (member_id), INDEX idx_payment_date (payment_date), INDEX idx_payment_period_end (period_end)
 ) ENGINE=InnoDB;
 
 -- 5. Book Issues Table (Lending Transactions)
@@ -133,6 +158,9 @@ INSERT IGNORE INTO categories (id, category_name, description) VALUES
 (3, 'Science & Nature', 'Physics, Chemistry, Biology, Astronomy, and Natural Sciences'),
 (4, 'Business & Economics', 'Management, Finance, Entrepreneurship, and Marketing'),
 (5, 'History & Biography', 'World history, civilizations, and inspirational biographies');
+
+INSERT IGNORE INTO membership_plans (id, name, monthly_fee, borrowing_limit, loan_days) VALUES
+(1, 'Standard', 500.00, 3, 14), (2, 'Student', 300.00, 2, 14), (3, 'Premium', 1000.00, 6, 30);
 
 -- Books
 INSERT IGNORE INTO books (id, category_id, title, author, isbn, publisher, published_year, quantity, available_quantity, rack_no, description) VALUES

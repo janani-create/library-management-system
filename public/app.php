@@ -7,7 +7,7 @@ update_overdue($pdo);
 
 $user = current_user();
 $page = $_GET['page'] ?? 'dashboard';
-$allowedPages = ['dashboard', 'books', 'categories', 'members', 'issues', 'return', 'overdue', 'reports', 'users', 'activity_logs', 'database_backup'];
+$allowedPages = ['dashboard', 'books', 'categories', 'members', 'memberships', 'issues', 'return', 'overdue', 'reports', 'users', 'activity_logs', 'database_backup'];
 
 if (!in_array($page, $allowedPages, true)) {
     $page = 'dashboard';
@@ -133,21 +133,80 @@ if (is_post()) {
             $phone = trim($_POST['phone'] ?? '');
             $address = trim($_POST['address'] ?? '');
             $status = $_POST['status'] ?? 'active';
+            $planId = !empty($_POST['membership_plan_id']) ? (int)$_POST['membership_plan_id'] : null;
 
             if (empty($fullName) || empty($email)) throw new Exception('Full name and email are required.');
 
             if ($id > 0) {
-                $pdo->prepare('UPDATE members SET member_no = ?, full_name = ?, email = ?, phone = ?, address = ?, status = ? WHERE id = ?')
-                    ->execute([$memberNo, $fullName, $email, $phone, $address, $status, $id]);
+                $pdo->prepare('UPDATE members SET member_no = ?, full_name = ?, email = ?, phone = ?, address = ?, status = ?, membership_plan_id = ? WHERE id = ?')
+                    ->execute([$memberNo, $fullName, $email, $phone, $address, $status, $planId, $id]);
                 flash('success', 'Member record updated.');
             } else {
                 if (empty($memberNo)) {
                     $memberNo = 'MEM-' . date('ym') . rand(100, 999);
                 }
-                $pdo->prepare('INSERT INTO members (member_no, full_name, email, phone, address, status) VALUES (?, ?, ?, ?, ?, ?)')
-                    ->execute([$memberNo, $fullName, $email, $phone, $address, $status]);
-                flash('success', 'New library member registered successfully.');
+                if (!$planId) throw new Exception('Please select a membership plan.');
+                $pdo->prepare('INSERT INTO members (member_no, full_name, email, phone, address, status, membership_plan_id) VALUES (?, ?, ?, ?, ?, ?, ?)')
+                    ->execute([$memberNo, $fullName, $email, $phone, $address, $status, $planId]);
+                flash('success', 'Member registered. Record the first monthly payment to activate library access.');
             }
+        }
+
+        elseif ($action === 'record_membership_payment') {
+            $memberId = (int)($_POST['member_id'] ?? 0);
+            $months = max(1, min(24, (int)($_POST['months'] ?? 1)));
+            $paymentMethod = $_POST['payment_method'] ?? 'cash';
+            if (!in_array($paymentMethod, ['cash', 'card', 'bank_transfer'], true)) throw new Exception('Invalid payment method.');
+
+            $pdo->beginTransaction();
+            $stmt = $pdo->prepare('SELECT m.*, mp.name AS plan_name, mp.monthly_fee FROM members m JOIN membership_plans mp ON mp.id = m.membership_plan_id WHERE m.id = ? AND mp.is_active = 1 FOR UPDATE');
+            $stmt->execute([$memberId]);
+            $member = $stmt->fetch();
+            if (!$member) throw new Exception('Member or active membership plan was not found.');
+            if ($member['status'] === 'suspended') throw new Exception('Suspended members cannot renew a membership.');
+
+            $today = new DateTimeImmutable('today');
+            $currentExpiry = !empty($member['membership_expires_at']) ? new DateTimeImmutable($member['membership_expires_at']) : null;
+            $periodStart = ($currentExpiry && $currentExpiry >= $today) ? $currentExpiry->modify('+1 day') : $today;
+            $periodEnd = $periodStart->modify('+' . $months . ' months')->modify('-1 day');
+            $amount = (float)$member['monthly_fee'] * $months;
+            $reference = 'PAY-' . date('ymdHis') . '-' . $memberId;
+
+            $pdo->prepare('INSERT INTO membership_payments (member_id, membership_plan_id, amount, months_paid, payment_date, period_start, period_end, payment_method, reference_no, received_by) VALUES (?, ?, ?, ?, CURDATE(), ?, ?, ?, ?, ?)')
+                ->execute([$memberId, $member['membership_plan_id'], $amount, $months, $periodStart->format('Y-m-d'), $periodEnd->format('Y-m-d'), $paymentMethod, $reference, $user['id'] ?? null]);
+            $pdo->prepare('UPDATE members SET membership_expires_at = ? WHERE id = ?')->execute([$periodEnd->format('Y-m-d'), $memberId]);
+            $pdo->commit();
+            flash('success', "Payment recorded. {$member['full_name']}'s membership is active until " . $periodEnd->format('d M Y') . '.');
+        }
+
+        elseif ($action === 'edit_membership_payment') {
+            $paymentId = (int)($_POST['payment_id'] ?? 0);
+            $months = max(1, min(24, (int)($_POST['months'] ?? 1)));
+            $paymentDate = $_POST['payment_date'] ?? date('Y-m-d');
+            $paymentMethod = $_POST['payment_method'] ?? 'cash';
+            if (!in_array($paymentMethod, ['cash', 'card', 'bank_transfer'], true)) throw new Exception('Invalid payment method.');
+            if (!DateTimeImmutable::createFromFormat('Y-m-d', $paymentDate)) throw new Exception('Invalid payment date.');
+
+            $pdo->beginTransaction();
+            $stmt = $pdo->prepare('SELECT p.*, m.full_name, mp.monthly_fee FROM membership_payments p JOIN members m ON m.id = p.member_id JOIN membership_plans mp ON mp.id = p.membership_plan_id WHERE p.id = ? FOR UPDATE');
+            $stmt->execute([$paymentId]);
+            $payment = $stmt->fetch();
+            if (!$payment) throw new Exception('Payment record was not found.');
+            $latest = $pdo->prepare('SELECT MAX(id) FROM membership_payments WHERE member_id = ?');
+            $latest->execute([$payment['member_id']]);
+            if ((int)$latest->fetchColumn() !== $paymentId) throw new Exception('Only the latest payment can be edited because later renewals depend on it.');
+
+            $previous = $pdo->prepare('SELECT period_end FROM membership_payments WHERE member_id = ? AND id < ? ORDER BY id DESC LIMIT 1');
+            $previous->execute([$payment['member_id'], $paymentId]);
+            $previousEnd = $previous->fetchColumn();
+            $start = $previousEnd ? (new DateTimeImmutable($previousEnd))->modify('+1 day') : new DateTimeImmutable($paymentDate);
+            $end = $start->modify('+' . $months . ' months')->modify('-1 day');
+            $amount = (float)$payment['monthly_fee'] * $months;
+            $pdo->prepare('UPDATE membership_payments SET amount = ?, months_paid = ?, payment_date = ?, period_start = ?, period_end = ?, payment_method = ? WHERE id = ?')
+                ->execute([$amount, $months, $paymentDate, $start->format('Y-m-d'), $end->format('Y-m-d'), $paymentMethod, $paymentId]);
+            $pdo->prepare('UPDATE members SET membership_expires_at = ? WHERE id = ?')->execute([$end->format('Y-m-d'), $payment['member_id']]);
+            $pdo->commit();
+            flash('success', "Payment updated. {$payment['full_name']}'s membership is now valid until " . $end->format('d M Y') . '.');
         }
 
         // --- 6. DELETE MEMBER ---
@@ -172,6 +231,13 @@ if (is_post()) {
 
             if (!$memberId || !$bookId) throw new Exception('Please select a member and a book.');
             if ($dueDate < $issueDate) throw new Exception('Due date cannot be earlier than issue date.');
+
+            $memberCheck = $pdo->prepare("SELECT full_name, status, membership_expires_at FROM members WHERE id = ?");
+            $memberCheck->execute([$memberId]);
+            $borrowingMember = $memberCheck->fetch();
+            if (!$borrowingMember || $borrowingMember['status'] !== 'active' || empty($borrowingMember['membership_expires_at']) || $borrowingMember['membership_expires_at'] < $issueDate) {
+                throw new Exception('Library access denied: this member does not have an active paid membership.');
+            }
 
             $pdo->beginTransaction();
 
@@ -293,6 +359,7 @@ $pageTitles = [
     'books'      => 'Books Inventory Management',
     'categories' => 'Book Categories',
     'members'    => 'Library Members',
+    'memberships'=> 'Memberships & Payments',
     'issues'     => 'Issue / Borrow Books',
     'return'     => 'Return Books & Fines',
     'overdue'    => 'Overdue Books Tracker',
@@ -355,6 +422,10 @@ $pageTitles = [
             <a href="app.php?page=members" class="nav-link <?=$page==='members'?'active':''?>">
                 <i class="bi bi-people-fill"></i>
                 <span>Members</span>
+            </a>
+            <a href="app.php?page=memberships" class="nav-link <?=$page==='memberships'?'active':''?>">
+                <i class="bi bi-credit-card-2-front-fill"></i>
+                <span>Memberships</span>
             </a>
 
             <div class="nav-section-label">Lending Operations</div>
@@ -687,8 +758,14 @@ $pageTitles = [
                     <a href="app.php?page=categories" class="quick-action-card">
                         <i class="bi bi-tags"></i><strong>Book Categories</strong><small>Create and organize catalog categories</small>
                     </a>
-                    <a href="app.php?page=members" class="quick-action-card">
-                        <i class="bi bi-person-plus"></i><strong>Manage Members</strong><small>Register, edit, and review library members</small>
+                    <a href="app.php?page=members&amp;new=1" class="quick-action-card">
+                        <i class="bi bi-person-plus"></i><strong>Register Member</strong><small>Add member details and select a membership plan</small>
+                    </a>
+                    <a href="app.php?page=memberships" class="quick-action-card">
+                        <i class="bi bi-credit-card-2-front"></i><strong>Membership Payment</strong><small>Activate or renew a member's library access</small>
+                    </a>
+                    <a href="app.php?page=memberships#recent-payments" class="quick-action-card">
+                        <i class="bi bi-pencil-square"></i><strong>Edit Payment</strong><small>Correct the latest membership payment details</small>
                     </a>
                     <a href="app.php?page=issues" class="quick-action-card">
                         <i class="bi bi-bookmark-plus"></i><strong>Issue a Book</strong><small>Record a new book borrowing</small>
@@ -1070,11 +1147,13 @@ $pageTitles = [
              MODULE 4: MEMBERS MANAGEMENT
              ======================================================= -->
         <?php elseif ($page === 'members'):
+            $membershipPlans = $pdo->query('SELECT * FROM membership_plans WHERE is_active = 1 ORDER BY monthly_fee')->fetchAll();
             $search = trim($_GET['q'] ?? '');
             $sql = '
-                SELECT m.*, 
+                SELECT m.*, mp.name AS plan_name, mp.monthly_fee,
                     (SELECT COUNT(*) FROM book_issues WHERE member_id = m.id AND return_date IS NULL) AS active_loans 
                 FROM members m 
+                LEFT JOIN membership_plans mp ON mp.id = m.membership_plan_id
                 WHERE 1=1
             ';
             $params = [];
@@ -1095,6 +1174,7 @@ $pageTitles = [
                 $s->execute([(int)$_GET['edit']]);
                 $editMember = $s->fetch();
             }
+            $showMemberModal = (bool)$editMember || isset($_GET['new']);
         ?>
 
             <div class="d-flex justify-content-between align-items-center flex-wrap gap-3 mb-4">
@@ -1135,8 +1215,8 @@ $pageTitles = [
                                 <th>Member No &amp; Name</th>
                                 <th>Email</th>
                                 <th>Phone</th>
-                                <th>Active Borrowings</th>
-                                <th>Status</th>
+                                <th>Plan</th>
+                                <th>Membership</th>
                                 <th class="text-end">Actions</th>
                             </tr>
                         </thead>
@@ -1158,19 +1238,11 @@ $pageTitles = [
                                     </td>
                                     <td><?=e($m['email'])?></td>
                                     <td><?=e($m['phone'] ?? '—')?></td>
+                                    <td><span class="fw-semibold"><?=e($m['plan_name'] ?? 'Not selected')?></span><br><small class="text-muted"><?=$m['monthly_fee'] !== null ? format_currency($m['monthly_fee']).'/month' : ''?></small></td>
                                     <td>
-                                        <?php if ($m['active_loans'] > 0): ?>
-                                            <span class="badge bg-warning-subtle text-warning-emphasis border border-warning px-2 py-1">
-                                                <i class="bi bi-book"></i> <?=$m['active_loans']?> books borrowed
-                                            </span>
-                                        <?php else: ?>
-                                            <span class="badge bg-light text-muted border">None</span>
-                                        <?php endif; ?>
-                                    </td>
-                                    <td>
-                                        <span class="badge-status <?=$m['status']?>">
-                                            <i class="bi bi-circle-fill" style="font-size: 0.5rem;"></i> <?=ucfirst($m['status'])?>
-                                        </span>
+                                        <?php $membershipActive = $m['status'] === 'active' && !empty($m['membership_expires_at']) && $m['membership_expires_at'] >= date('Y-m-d'); ?>
+                                        <span class="badge-status <?=$membershipActive ? 'active' : 'suspended'?>"><i class="bi bi-circle-fill" style="font-size:.5rem"></i> <?=$membershipActive ? 'Active' : ($m['status'] === 'suspended' ? 'Suspended' : 'Expired')?></span>
+                                        <small class="d-block text-muted mt-1"><?=$m['membership_expires_at'] ? 'Until '.date('d M Y', strtotime($m['membership_expires_at'])) : 'Payment required'?></small>
                                     </td>
                                     <td class="text-end">
                                         <div class="btn-group btn-group-sm">
@@ -1196,7 +1268,7 @@ $pageTitles = [
             </div>
 
             <!-- Add / Edit Member Modal -->
-            <div class="modal fade <?=$editMember?'show d-block':''?>" id="memberModal" tabindex="-1" style="<?=$editMember?'background: rgba(0,0,0,0.5);':''?>">
+            <div class="modal fade <?=$showMemberModal?'show d-block':''?>" id="memberModal" tabindex="-1" style="<?=$showMemberModal?'background: rgba(0,0,0,0.5);':''?>">
                 <div class="modal-dialog modal-dialog-centered">
                     <div class="modal-content">
                         <form method="post" action="app.php?page=members">
@@ -1210,7 +1282,7 @@ $pageTitles = [
                                     <i class="bi bi-person-fill text-primary me-2"></i>
                                     <?=$editMember ? 'Edit Member Details' : 'Register New Library Member'?>
                                 </h5>
-                                <?php if ($editMember): ?>
+                                <?php if ($showMemberModal): ?>
                                     <a href="app.php?page=members" class="btn-close"></a>
                                 <?php else: ?>
                                     <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
@@ -1244,6 +1316,17 @@ $pageTitles = [
                                 </div>
 
                                 <div class="mb-3">
+                                    <label class="form-label fw-semibold small">Membership Plan *</label>
+                                    <select name="membership_plan_id" class="form-select" required>
+                                        <option value="">-- Select Plan --</option>
+                                        <?php foreach ($membershipPlans as $plan): ?>
+                                            <option value="<?=$plan['id']?>" <?=((int)($editMember['membership_plan_id']??0)===(int)$plan['id'])?'selected':''?>><?=e($plan['name'])?> — <?=format_currency($plan['monthly_fee'])?> / month</option>
+                                        <?php endforeach; ?>
+                                    </select>
+                                    <?php if (!$editMember): ?><div class="form-text">Membership becomes active after the first payment.</div><?php endif; ?>
+                                </div>
+
+                                <div class="mb-3">
                                     <label class="form-label fw-semibold small">Status</label>
                                     <select name="status" class="form-select">
                                         <option value="active" <?=($editMember['status']??'active')==='active'?'selected':''?>>Active</option>
@@ -1253,7 +1336,7 @@ $pageTitles = [
                             </div>
 
                             <div class="modal-footer">
-                                <?php if ($editMember): ?>
+                                <?php if ($showMemberModal): ?>
                                     <a href="app.php?page=members" class="btn btn-light">Cancel</a>
                                 <?php else: ?>
                                     <button type="button" class="btn btn-light" data-bs-dismiss="modal">Close</button>
@@ -1265,11 +1348,49 @@ $pageTitles = [
                 </div>
             </div>
 
+        <?php elseif ($page === 'memberships'):
+            $membershipRows = $pdo->query("SELECT m.*, mp.name AS plan_name, mp.monthly_fee, (m.status = 'active' AND m.membership_expires_at IS NOT NULL AND m.membership_expires_at >= CURDATE()) AS is_membership_active FROM members m LEFT JOIN membership_plans mp ON mp.id = m.membership_plan_id ORDER BY is_membership_active ASC, m.membership_expires_at ASC, m.full_name")->fetchAll();
+            $paymentRows = $pdo->query('SELECT p.*, m.member_no, m.full_name, mp.name AS plan_name, mp.monthly_fee, u.name AS received_by_name, (p.id = (SELECT MAX(p2.id) FROM membership_payments p2 WHERE p2.member_id = p.member_id)) AS is_latest FROM membership_payments p JOIN members m ON m.id = p.member_id JOIN membership_plans mp ON mp.id = p.membership_plan_id LEFT JOIN users u ON u.id = p.received_by ORDER BY p.id DESC LIMIT 50')->fetchAll();
+            $activeCount = (int)$pdo->query("SELECT COUNT(*) FROM members WHERE status = 'active' AND membership_expires_at >= CURDATE()")->fetchColumn();
+            $expiredCount = count($membershipRows) - $activeCount;
+        ?>
+            <div class="d-flex justify-content-between align-items-center flex-wrap gap-3 mb-4">
+                <div><h4 class="fw-bold mb-1">Memberships &amp; Monthly Payments</h4><p class="text-muted small mb-0">Register → select plan → receive payment → activate access → renew monthly.</p></div>
+                <div class="d-flex align-items-center flex-wrap gap-2"><a href="app.php?page=members&amp;new=1" class="btn btn-primary"><i class="bi bi-person-plus-fill me-1"></i> Register New Member</a><span class="badge bg-success-subtle text-success border px-3 py-2"><?=$activeCount?> Active</span><span class="badge bg-danger-subtle text-danger border px-3 py-2"><?=$expiredCount?> Expired / Pending</span></div>
+            </div>
+            <div class="alert alert-primary border-0 shadow-sm mb-4">
+                <div class="d-flex gap-3 align-items-start"><i class="bi bi-info-circle-fill fs-4"></i><div><strong>How to add membership details</strong><div class="small mt-1">For a new person, click <strong>Register New Member</strong>, enter the details and select a plan. For an existing person showing <strong>No plan</strong>, click <strong>Edit Member</strong> and select a plan. Then return here and click <strong>Pay &amp; Activate</strong>.</div></div></div>
+            </div>
+            <div class="card-modern p-3 mb-4">
+                <div class="membership-flow">
+                    <?php foreach ([['person-plus','Register Member'],['card-list','Select Plan'],['cash-coin','Monthly Payment'],['shield-check','Membership Active'],['book','Library Access'],['calendar-event','Next Payment Due']] as $i => $step): ?>
+                        <div class="membership-step"><i class="bi bi-<?=$step[0]?>"></i><span><?=$step[1]?></span></div><?php if ($i < 5): ?><i class="bi bi-arrow-right membership-arrow"></i><?php endif; ?>
+                    <?php endforeach; ?>
+                </div>
+            </div>
+            <div class="card-modern mb-4">
+                <div class="p-3 border-bottom"><h5 class="fw-bold mb-0">Member Access Status</h5></div>
+                <div class="table-responsive"><table class="table-modern"><thead><tr><th>Member</th><th>Plan</th><th>Fee</th><th>Valid Until</th><th>Status</th><th class="text-end">Payment</th></tr></thead><tbody>
+                    <?php if (!$membershipRows): ?><tr><td colspan="6" class="text-center py-5 text-muted">Register a member to begin.</td></tr><?php endif; ?>
+                    <?php foreach ($membershipRows as $m): ?><tr>
+                        <td><strong><?=e($m['full_name'])?></strong><br><small class="text-muted"><?=e($m['member_no'])?></small></td><td><?=e($m['plan_name'] ?? 'No plan')?></td><td><?=$m['monthly_fee'] !== null ? format_currency($m['monthly_fee']) : '—'?></td><td><?=$m['membership_expires_at'] ? date('d M Y', strtotime($m['membership_expires_at'])) : 'Not activated'?></td>
+                        <td><span class="badge-status <?=$m['is_membership_active'] ? 'active' : 'suspended'?>"><?=$m['is_membership_active'] ? 'Active' : ($m['status'] === 'suspended' ? 'Suspended' : 'Expired')?></span></td>
+                        <td class="text-end"><?php if ($m['membership_plan_id'] && $m['status'] !== 'suspended'): ?><button class="btn btn-sm btn-primary" data-bs-toggle="modal" data-bs-target="#paymentModal" data-member-id="<?=$m['id']?>" data-member-name="<?=e($m['full_name'])?>" data-monthly-fee="<?=$m['monthly_fee']?>"><i class="bi bi-cash-coin me-1"></i><?=$m['is_membership_active'] ? 'Renew' : 'Pay & Activate'?></button><?php else: ?><a class="btn btn-sm btn-outline-secondary" href="app.php?page=members&edit=<?=$m['id']?>">Edit Member</a><?php endif; ?></td>
+                    </tr><?php endforeach; ?>
+                </tbody></table></div>
+            </div>
+            <div class="card-modern" id="recent-payments"><div class="p-3 border-bottom"><h5 class="fw-bold mb-0">Recent Payments</h5><small class="text-muted">Use Edit on the latest payment to correct its date, duration, or method.</small></div><div class="table-responsive"><table class="table-modern"><thead><tr><th>Date / Reference</th><th>Member</th><th>Plan</th><th>Period</th><th>Method</th><th class="text-end">Amount</th><th class="text-end">Action</th></tr></thead><tbody>
+                <?php if (!$paymentRows): ?><tr><td colspan="7" class="text-center py-5 text-muted">No membership payments recorded yet.</td></tr><?php endif; ?>
+                <?php foreach ($paymentRows as $p): ?><tr><td><?=date('d M Y', strtotime($p['payment_date']))?><br><small class="text-muted"><?=e($p['reference_no'])?></small></td><td><strong><?=e($p['full_name'])?></strong><br><small><?=e($p['member_no'])?></small></td><td><?=e($p['plan_name'])?> × <?=$p['months_paid']?> month(s)</td><td><?=date('d M Y', strtotime($p['period_start']))?> – <?=date('d M Y', strtotime($p['period_end']))?></td><td><?=e(ucwords(str_replace('_',' ',$p['payment_method'])))?></td><td class="text-end fw-bold"><?=format_currency($p['amount'])?></td><td class="text-end"><?php if ($p['is_latest']): ?><button type="button" class="btn btn-sm btn-outline-primary edit-payment-btn" data-bs-toggle="modal" data-bs-target="#editPaymentModal" data-payment-id="<?=$p['id']?>" data-member-name="<?=e($p['full_name'])?>" data-payment-date="<?=e($p['payment_date'])?>" data-months="<?=$p['months_paid']?>" data-method="<?=e($p['payment_method'])?>" data-monthly-fee="<?=$p['monthly_fee']?>"><i class="bi bi-pencil-square me-1"></i>Edit</button><?php else: ?><span class="text-muted small" title="A later renewal depends on this payment">Locked</span><?php endif; ?></td></tr><?php endforeach; ?>
+            </tbody></table></div></div>
+            <div class="modal fade" id="paymentModal" tabindex="-1"><div class="modal-dialog modal-dialog-centered"><div class="modal-content"><form method="post" action="app.php?page=memberships"><input type="hidden" name="csrf" value="<?=csrf_token()?>"><input type="hidden" name="action" value="record_membership_payment"><input type="hidden" name="return_page" value="memberships"><input type="hidden" name="member_id" id="paymentMemberId"><div class="modal-header"><h5 class="modal-title fw-bold">Record Monthly Payment</h5><button type="button" class="btn-close" data-bs-dismiss="modal"></button></div><div class="modal-body"><div class="alert alert-light border">Member: <strong id="paymentMemberName"></strong></div><label class="form-label fw-semibold">Number of Months</label><input class="form-control mb-3" type="number" name="months" id="paymentMonths" value="1" min="1" max="24" required><label class="form-label fw-semibold">Payment Method</label><select class="form-select" name="payment_method"><option value="cash">Cash</option><option value="card">Card</option><option value="bank_transfer">Bank Transfer</option></select><div class="mt-3 text-end">Total: <strong class="fs-5 text-primary" id="paymentTotal"></strong></div></div><div class="modal-footer"><button type="button" class="btn btn-light" data-bs-dismiss="modal">Cancel</button><button class="btn btn-primary" type="submit">Confirm Payment &amp; Activate</button></div></form></div></div></div>
+            <div class="modal fade" id="editPaymentModal" tabindex="-1"><div class="modal-dialog modal-dialog-centered"><div class="modal-content"><form method="post" action="app.php?page=memberships"><input type="hidden" name="csrf" value="<?=csrf_token()?>"><input type="hidden" name="action" value="edit_membership_payment"><input type="hidden" name="return_page" value="memberships"><input type="hidden" name="payment_id" id="editPaymentId"><div class="modal-header"><h5 class="modal-title fw-bold">Edit Membership Payment</h5><button type="button" class="btn-close" data-bs-dismiss="modal"></button></div><div class="modal-body"><div class="alert alert-warning small"><i class="bi bi-info-circle me-1"></i> Updating this payment recalculates the member's membership expiry date.</div><div class="mb-3">Member: <strong id="editPaymentMember"></strong></div><label class="form-label fw-semibold">Payment Date</label><input class="form-control mb-3" type="date" name="payment_date" id="editPaymentDate" required><label class="form-label fw-semibold">Number of Months</label><input class="form-control mb-3" type="number" name="months" id="editPaymentMonths" min="1" max="24" required><label class="form-label fw-semibold">Payment Method</label><select class="form-select" name="payment_method" id="editPaymentMethod"><option value="cash">Cash</option><option value="card">Card</option><option value="bank_transfer">Bank Transfer</option></select><div class="mt-3 text-end">Updated total: <strong class="fs-5 text-primary" id="editPaymentTotal"></strong></div></div><div class="modal-footer"><button type="button" class="btn btn-light" data-bs-dismiss="modal">Cancel</button><button class="btn btn-primary" type="submit">Save Payment Changes</button></div></form></div></div></div>
+
         <!-- =======================================================
              MODULE 5: ISSUE BOOKS (LENDING)
              ======================================================= -->
         <?php elseif ($page === 'issues'):
-            $membersList = $pdo->query('SELECT id, member_no, full_name, email FROM members WHERE status = "active" ORDER BY full_name')->fetchAll();
+            $membersList = $pdo->query('SELECT id, member_no, full_name, email, membership_expires_at FROM members WHERE status = "active" AND membership_expires_at >= CURDATE() ORDER BY full_name')->fetchAll();
             $booksList = $pdo->query('SELECT id, title, isbn, author, available_quantity FROM books WHERE available_quantity > 0 ORDER BY title')->fetchAll();
 
             $activeIssues = $pdo->query("
